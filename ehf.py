@@ -7,7 +7,7 @@ except ImportError as e:
     raise
 
 import csv
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 import argparse
 import os
 import sys
@@ -64,20 +64,84 @@ def scrape_player_data(url):
                 for section in ('players', 'goalKeepers', 'playersLeft'):
                     items = json_data.get(section, [])
                     for item in items:
-                        person = item.get('person', {})
-                        first = person.get('firstName') or ''
-                        last = person.get('lastName') or ''
-                        name = (first + ' ' + last).strip() if (first or last) else item.get('url', '')
-                        number = item.get('shirtNumber') or ''
-                        position = item.get('playingPosition') or ''
-                        age = person.get('age') or ''
+                                person = item.get('person', {})
+                                first = person.get('firstName') or ''
+                                last = person.get('lastName') or ''
+                                name = (first + ' ' + last).strip() if (first or last) else item.get('url', '')
+                                number = item.get('shirtNumber') or ''
+                                position = item.get('playingPosition') or ''
+                                age = person.get('age') or ''
 
-                        player_data.append({
-                            '背番号': number,
-                            '選手名': name,
-                            'Position': position,
-                            'Age': age
-                        })
+                                # 画像ダウンロード処理
+                                image_path = ''
+                                images_dir = os.path.join('images', 'ehf')
+                                os.makedirs(images_dir, exist_ok=True)
+
+                                # JSON内の画像フィールドを探す（newPhoto.w360, w180 等、また photo 配列）
+                                img_url = ''
+                                new_photo = item.get('newPhoto') or {}
+                                if isinstance(new_photo, dict):
+                                    # 優先順に試す
+                                    for key in ('w1024', 'w512', 'w360', 'w180'):
+                                        if new_photo.get(key):
+                                            img_url = new_photo.get(key)
+                                            break
+
+                                if not img_url:
+                                    photos = item.get('photos') or item.get('photo') or []
+                                    if isinstance(photos, dict):
+                                        # sometimes a dict with sizes
+                                        for key in ('w1024', 'w512', 'w360', 'w180'):
+                                            if photos.get(key):
+                                                img_url = photos.get(key)
+                                                break
+                                    elif isinstance(photos, list) and photos:
+                                        first_photo = photos[0]
+                                        if isinstance(first_photo, dict):
+                                            for key in ('w1024', 'w512', 'w360', 'w180'):
+                                                if first_photo.get(key):
+                                                    img_url = first_photo.get(key)
+                                                    break
+                                        else:
+                                            # maybe it's a url string
+                                            img_url = first_photo
+
+                                if img_url:
+                                    # 絶対URLに
+                                    try:
+                                        img_url = urljoin(api_url, img_url) if 'api_url' in locals() else img_url
+                                    except Exception:
+                                        pass
+
+                                    # ファイル名を生成
+                                    try:
+                                        pid = item.get('id') or person.get('id') or ''
+                                        _, ext = os.path.splitext(urlparse(img_url).path)
+                                        if not ext:
+                                            ext = '.jpg'
+                                        import re
+                                        name_slug = re.sub(r"[^0-9A-Za-z一-龥ぁ-んァ-ン\- ]", '', name).strip().replace(' ', '_')[:50]
+                                        filename = f"{pid}_{name_slug}{ext}" if pid else f"{name_slug}{ext}"
+                                        local_path = os.path.join(images_dir, filename)
+                                        if not os.path.exists(local_path):
+                                            try:
+                                                r = requests.get(img_url, timeout=10)
+                                                r.raise_for_status()
+                                                with open(local_path, 'wb') as wf:
+                                                    wf.write(r.content)
+                                            except Exception:
+                                                local_path = ''
+                                        image_path = local_path
+                                    except Exception:
+                                        image_path = ''
+
+                                player_data.append({
+                                    '背番号': number,
+                                    '選手名': name,
+                                    'Position': position,
+                                    'Age': age,
+                                    'Image': image_path
+                                })
 
                 return player_data
             except requests.exceptions.RequestException as e:
@@ -118,7 +182,7 @@ def save_to_csv(data, filename='player_roster.csv'):
         
     # ヘッダー：データ中のキーを集め、既知の主要カラム順を優先して並べる
     # 既知の順序
-    preferred = ['背番号', '選手名', 'Position', 'Age']
+    preferred = ['背番号', '選手名', 'Position', 'Age', 'Image']
     keys = []
     for item in data:
         for k in item.keys():
