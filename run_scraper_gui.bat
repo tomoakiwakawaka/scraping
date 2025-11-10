@@ -1,0 +1,5 @@
+@echo off
+REM Change to the directory where the script is located
+cd /d %~dp0
+REM Run the Python script
+python scraper_gui_direct.py

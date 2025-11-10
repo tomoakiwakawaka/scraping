@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Scraper GUI
+Comment=Run the Scraper GUI for team roster scraping
+Exec=/home/ratel/scrap/run_scraper_gui.sh
+Icon=/home/ratel/scrap/icons/scraper_icon.svg
+Terminal=false
+Categories=Utility;Development;
+StartupNotify=true

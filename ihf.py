@@ -6,6 +6,10 @@ except ImportError as e:
     raise
 
 import os
+from urllib.parse import urljoin, urlparse
+import re
+from PIL import Image
+from image_utils import download_and_process_image
 
 
 def scrape_player_data(url):
@@ -62,35 +66,34 @@ def scrape_player_data(url):
         if not img_tag:
             img_tag = a.find_previous_sibling('img')
 
+        # 高解像度バリアントをさらに試行
+        def try_additional_variants(base_url):
+            variants = [
+                base_url + '?original=true',
+                base_url + '?size=2048',
+                base_url + '?quality=100',
+                base_url
+            ]
+            for variant in variants:
+                try:
+                    head = requests.head(variant, timeout=5)
+                    if head.status_code == 200:
+                        return variant
+                except requests.RequestException:
+                    continue
+            return base_url
+
+        img_url = try_additional_variants(img_url)
+
+        # 画像保存ロジックをユーティリティ関数に置き換え
+        image_path = ''
         if img_tag:
             src = img_tag.get('src') or img_tag.get('data-src') or img_tag.get('data-original')
             if src:
-                # 絶対URLを構築
-                from urllib.parse import urljoin, urlparse
                 img_url = urljoin(url, src)
-                # ファイル名: 最後の path 部分 or player id + sanitized name
                 parsed = urlparse(href)
                 player_id = parsed.path.rstrip('/').split('/')[-1]
-                _, ext = os.path.splitext(urlparse(img_url).path)
-                if not ext:
-                    ext = '.jpg'
-                # sanitize name for filename
-                import re
-                name_slug = re.sub(r'[^0-9A-Za-z一-龥ぁ-んァ-ン\- ]', '', name).strip().replace(' ', '_')[:50]
-                filename = f"{player_id}_{name_slug}{ext}"
-                local_path = os.path.join(images_dir, filename)
-
-                # ダウンロード（重複チェック）
-                if not os.path.exists(local_path):
-                    try:
-                        r = requests.get(img_url, timeout=10)
-                        r.raise_for_status()
-                        with open(local_path, 'wb') as wf:
-                            wf.write(r.content)
-                    except Exception:
-                        local_path = ''
-
-                image_path = local_path
+                image_path = download_and_process_image(img_url, images_dir, name, player_id)
 
         # もし 'Club:' があればその前を名前として使う
         if 'Club:' in text:

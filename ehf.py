@@ -11,6 +11,8 @@ from urllib.parse import urlparse, urljoin
 import argparse
 import os
 import sys
+import re
+import mimetypes
 
 def scrape_player_data(url):
     """
@@ -77,12 +79,13 @@ def scrape_player_data(url):
                                 images_dir = os.path.join('images', 'ehf')
                                 os.makedirs(images_dir, exist_ok=True)
 
-                                # JSON内の画像フィールドを探す（newPhoto.w360, w180 等、また photo 配列）
+                                # JSON内の画像フィールドを探す（優先的に高解像度を選ぶ）
                                 img_url = ''
                                 new_photo = item.get('newPhoto') or {}
+                                # 高解像度を優先するキー順
+                                size_priority = ('original', 'w2048', 'w1536', 'w1280', 'w1024', 'w512', 'w360', 'w180')
                                 if isinstance(new_photo, dict):
-                                    # 優先順に試す
-                                    for key in ('w1024', 'w512', 'w360', 'w180'):
+                                    for key in size_priority:
                                         if new_photo.get(key):
                                             img_url = new_photo.get(key)
                                             break
@@ -90,15 +93,14 @@ def scrape_player_data(url):
                                 if not img_url:
                                     photos = item.get('photos') or item.get('photo') or []
                                     if isinstance(photos, dict):
-                                        # sometimes a dict with sizes
-                                        for key in ('w1024', 'w512', 'w360', 'w180'):
+                                        for key in size_priority:
                                             if photos.get(key):
                                                 img_url = photos.get(key)
                                                 break
                                     elif isinstance(photos, list) and photos:
                                         first_photo = photos[0]
                                         if isinstance(first_photo, dict):
-                                            for key in ('w1024', 'w512', 'w360', 'w180'):
+                                            for key in size_priority:
                                                 if first_photo.get(key):
                                                     img_url = first_photo.get(key)
                                                     break
@@ -113,19 +115,63 @@ def scrape_player_data(url):
                                     except Exception:
                                         pass
 
-                                    # ファイル名を生成
+                                    # 可能な高解像度バリアントを試す（例: w180 -> w2048）
+                                    def probe_url(u):
+                                        try:
+                                            head = requests.head(u, allow_redirects=True, timeout=5)
+                                            if head.status_code == 200 and head.headers.get('Content-Length'):
+                                                return True, head
+                                            # some servers don't respond to HEAD properly; try GET with small read
+                                            getr = requests.get(u, stream=True, timeout=7)
+                                            if getr.status_code == 200:
+                                                # close the stream
+                                                getr.close()
+                                                return True, getr
+                                        except Exception:
+                                            return False, None
+                                        return False, None
+
+                                    # size_priority を上位から試せるように準備
+                                    tried_url = img_url
+                                    # もし URL に wXXX のようなトークンが含まれるなら大きいサイズへ置換して試す
+                                    m = re.search(r'w(\d+)', img_url)
+                                    if m:
+                                        for sz in ('w2048', 'w1536', 'w1280', 'w1024', 'w512', 'w360', 'w180'):
+                                            candidate = re.sub(r'w\d+', sz, img_url)
+                                            ok, _ = probe_url(candidate)
+                                            if ok:
+                                                tried_url = candidate
+                                                break
+                                    else:
+                                        # トークンが無い場合は、原寸や大きめサイズを示すパラメータを追加して試す（サーバ依存）
+                                        alt_candidates = [img_url + '?original=true', img_url + '?size=2048', img_url]
+                                        for candidate in alt_candidates:
+                                            ok, _ = probe_url(candidate)
+                                            if ok:
+                                                tried_url = candidate
+                                                break
+
+                                    # ファイル名を生成してダウンロード
                                     try:
                                         pid = item.get('id') or person.get('id') or ''
-                                        _, ext = os.path.splitext(urlparse(img_url).path)
-                                        if not ext:
-                                            ext = '.jpg'
-                                        import re
+                                        path = urlparse(tried_url).path
+                                        _, ext = os.path.splitext(path)
+
+                                        # 拡張子がなければ Content-Type から推定
+                                        if not ext or ext == '':
+                                            try:
+                                                resp_head = requests.head(tried_url, allow_redirects=True, timeout=7)
+                                                ctype = resp_head.headers.get('Content-Type', '')
+                                            except Exception:
+                                                ctype = ''
+                                            ext = mimetypes.guess_extension(ctype.split(';')[0].strip()) or '.jpg'
+
                                         name_slug = re.sub(r"[^0-9A-Za-z一-龥ぁ-んァ-ン\- ]", '', name).strip().replace(' ', '_')[:50]
                                         filename = f"{pid}_{name_slug}{ext}" if pid else f"{name_slug}{ext}"
                                         local_path = os.path.join(images_dir, filename)
                                         if not os.path.exists(local_path):
                                             try:
-                                                r = requests.get(img_url, timeout=10)
+                                                r = requests.get(tried_url, timeout=15)
                                                 r.raise_for_status()
                                                 with open(local_path, 'wb') as wf:
                                                     wf.write(r.content)
